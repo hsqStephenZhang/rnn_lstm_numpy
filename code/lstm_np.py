@@ -35,11 +35,11 @@ class Parameters(object):
     """
 
     def __init__(self):
-        self.Wf = Param("W_f", 0.01 * np.random.rand(hidden_size, total_size))
-        self.Wi = Param("W_i", 0.01 * np.random.rand(hidden_size, total_size))
-        self.Wc = Param("W_c", 0.01 * np.random.rand(hidden_size, total_size))
-        self.Wo = Param("W_o", 0.01 * np.random.rand(hidden_size, total_size))
-        self.Wv = Param("W_v", 0.01 * np.random.rand(vocab_size, hidden_size))
+        self.Wf = Param("W_f", 0.1 * np.random.rand(hidden_size, total_size)+0.5)
+        self.Wi = Param("W_i", 0.1 * np.random.rand(hidden_size, total_size)+0.5)
+        self.Wc = Param("W_c", 0.1 * np.random.rand(hidden_size, total_size)+0.5)
+        self.Wo = Param("W_o", 0.1 * np.random.rand(hidden_size, total_size)+0.5)
+        self.Wv = Param("W_v", 0.1 * np.random.rand(vocab_size, hidden_size)+0.5)
         self.bf = Param("B_f", np.zeros((hidden_size, 1)))
         self.bi = Param("B_i", np.zeros((hidden_size, 1)))
         self.bc = Param("B_c", np.zeros((hidden_size, 1)))
@@ -53,14 +53,14 @@ class Parameters(object):
             self.Wi,
             self.Wo,
             self.Wv,
+            self.bc,
             self.bf,
             self.bi,
-            self.bc,
             self.bo,
             self.bv]
 
 
-paramters = Parameters()
+parameters = Parameters()
 
 # some functions as well as the derivitive of them
 
@@ -81,7 +81,7 @@ def dtanh(y):
     return 1 - y * y
 
 
-def forward(x, h_prev, c_prev, p=paramters):
+def forward(x, h_prev, c_prev, p=parameters):
     assert x.shape == (vocab_size, 1)
     assert h_prev.shape == (hidden_size, 1)
     assert c_prev.shape == (hidden_size, 1)
@@ -114,8 +114,8 @@ def backward(
         h,
         v,
         y,
-        p=paramters):
-    assert z.shape == (vocab_size + hidden_size, 1)
+        p=parameters):
+    assert z.shape == (total_size, 1)
     assert v.shape == (vocab_size, 1)
     assert y.shape == (vocab_size, 1)
 
@@ -133,10 +133,10 @@ def backward(
     do = dh * tanh(c)
     do_raw = do * dsigmoid(o)
     p.Wo.d += np.dot(do_raw, z.T)
-    p.bo.d = do_raw
+    p.bo.d += do_raw
 
     dc = np.copy(dc_next)
-    dc += dh * do * dtanh(c)
+    dc += dh * o * dtanh(c)
     dc_bar = dc * i
     dc_bar_raw = dc_bar * dtanh(c_bar)
     p.Wc.d += np.dot(dc_bar_raw, z.T)
@@ -157,30 +157,81 @@ def backward(
           + np.dot(p.Wc.v.T, dc_bar)
           + np.dot(p.Wo.v.T, do))
 
+    clip_gradients(p=parameters)
+
     dh_prev = dz[:hidden_size, :]
     dc_prev = f * dc
-    # print("--",dc,"--",sep="")
 
     return dh_prev, dc_prev
 
 
-def clear_gradients(p=paramters):
+def backward2(target, dh_next, dC_next, C_prev,
+             z, f, i, C_bar, C, o, h, v, y,
+             p=parameters):
+    assert z.shape == (vocab_size + hidden_size, 1)
+    assert v.shape == (vocab_size, 1)
+    assert y.shape == (vocab_size, 1)
+
+    for param in [dh_next, dC_next, C_prev, f, i, C_bar, C, o, h]:
+        assert param.shape == (hidden_size, 1)
+
+    dv = np.copy(y)
+    dv[target] -= 1
+
+    p.Wv.d += np.dot(dv, h.T)
+    p.bv.d += dv
+
+    dh = np.dot(p.Wv.v.T, dv)
+    dh += dh_next
+    do = dh * tanh(C)
+    do = dsigmoid(o) * do
+    p.Wo.d += np.dot(do, z.T)
+    p.bo.d += do
+
+    dC = np.copy(dC_next)
+    dC += dh * o * dtanh(tanh(C))
+    dC_bar = dC * i
+    dC_bar = dtanh(C_bar) * dC_bar
+    p.Wc.d += np.dot(dC_bar, z.T)
+    p.bc.d += dC_bar
+
+    di = dC * C_bar
+    di = dsigmoid(i) * di
+    p.Wi.d += np.dot(di, z.T)
+    p.bi.d += di
+
+    df = dC * C_prev
+    df = dsigmoid(f) * df
+    p.Wf.d += np.dot(df, z.T)
+    p.bf.d += df
+
+    dz = (np.dot(p.Wf.v.T, df)
+          + np.dot(p.Wi.v.T, di)
+          + np.dot(p.Wc.v.T, dC_bar)
+          + np.dot(p.Wo.v.T, do))
+    dh_prev = dz[:hidden_size, :]
+    dC_prev = f * dC
+
+    return dh_prev, dC_prev
+
+
+def clear_gradients(p=parameters):
     for item in p.all():
         item.d.fill(0)
 
 
-def clip_gradients(p=paramters):
+def clip_gradients(p=parameters):
     for item in p.all():
         np.clip(item.d, -1, 1, out=item.d)
 
 
-def update_parameters(lr, p=paramters):
+def update_parameters(lr, p=parameters):
     for item in p.all():
         item.m += item.d * item.d
         item.v -= lr * item.d / np.sqrt(item.m + 1e-8)
 
 
-def loss_func(inputs, targets, h_prev, c_prev, p=paramters):
+def loss_func(inputs, targets, h_prev, c_prev, p=parameters):
     x_s, z_s, f_s, i_s = {}, {}, {}, {}
     c_s, c_bar_s, o_s, h_s = {}, {}, {}, {}
     v_s, y_s = {}, {}
@@ -214,11 +265,11 @@ def loss_func(inputs, targets, h_prev, c_prev, p=paramters):
     return loss, h_s[len(inputs) - 1], c_s[len(inputs) - 1]
 
 
-def sample(c_prev, h_prev, seed_ix, length, p=paramters):
+def sample(c_prev, h_prev, seed_ix, length, p=parameters):
     x = np.zeros((vocab_size, 1))
     x[seed_ix] = 1
-    h=h_prev
-    c=c_prev
+    h = h_prev
+    c = c_prev
     indexes = []
     for t in range(length):
         z, f, i, c_bar, c, o, h, v, y = forward(x, h, c, p)
@@ -250,12 +301,12 @@ def train():
         loss, h_prev, c_prev = loss_func(inputs, targets, h_prev, c_prev)
 
         loss = 0.99 * loss + 0.01 * smooth_loss
-        if iterations % 100 == 0:
+        if iterations % 100 ==0 :
             print("iterations:{},loss:{}".format(iterations, loss))
-            sample_ix=sample(c_prev,h_prev,seed_ix=inputs[0],length=200)
+            sample_ix=sample(c_prev,h_prev,seed_ix=inputs[0],length=40)
             print("---/\n {} \n/---".format("".join(ix_to_char[ix] for ix in sample_ix)))
 
-        update_parameters(learning_rate, paramters)
+        update_parameters(learning_rate, parameters)
 
         p += lstm_num
         iterations += 1
